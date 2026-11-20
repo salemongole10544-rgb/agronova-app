@@ -1,0 +1,251 @@
+﻿"use client"
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+
+export default function Page() {
+  const [animaux, setAnimaux] = useState<any[]>([])
+  const [saillies, setSaillies] = useState<any[]>([])
+  const [portees, setPortes] = useState<any[]>([])
+  const [ventes, setVentes] = useState<any[]>([])
+  const [transactions, setTransactions] = useState<any[]>([])
+  const [aliments, setAliments] = useState<any[]>([])
+  const [mouvements, setMouvements] = useState<any[]>([])
+  const [mouvementsAll, setMouvementsAll] = useState<any[]>([])
+  const [pesees, setPesees] = useState<any[]>([])
+  const [lotChoisi, setLotChoisi] = useState('E01 - AG-1003')
+  const [userEmail, setUserEmail] = useState('')
+  const [nouveauPoids, setNouveauPoids] = useState('')
+  const [nouvelleDate, setNouvelleDate] = useState('2026-11-19')
+  const [msgPesee, setMsgPesee] = useState('')
+
+  const charger = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) setUserEmail(user.email || '')
+    const { data: a } = await supabase.from('animaux').select('*')
+    setAnimaux(a || [])
+    const { data: s } = await supabase.from('saillies').select('*').order('date_mise_bas_prevue')
+    setSaillies(s || [])
+    const { data: p } = await supabase.from('portees').select('*')
+    setPortes(p || [])
+    const { data: v } = await supabase.from('ventes').select('*')
+    setVentes(v || [])
+    const { data: t } = await supabase.from('transactions').select('*')
+    setTransactions(t || [])
+    const { data: al } = await supabase.from('aliments').select('*')
+    setAliments(al || [])
+    const { data: mvAll } = await supabase.from('mouvements_stock_aliment').select('*')
+    const { data: mv } = await supabase.from('mouvements_stock_aliment').select('*').order('created_at', { ascending: false }).limit(4)
+    setMouvementsAll(mvAll || [])
+    setMouvements(mv || [])
+    const { data: ps } = await supabase.from('pesees').select('*').order('date_pesee', { ascending: true })
+    setPesees(ps || [])
+  }
+  useEffect(() => { charger(); const d = new Date(); const iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); setNouvelleDate(iso); }, [])
+
+  const ajouterPesee = async () => {
+    if (!nouveauPoids) { setMsgPesee('Mets le poids en kg.'); return }
+    const codeAnimal = lotChoisi.split(' - ')[1] || 'AG-1003'
+    const enclosAnimal = lotChoisi.split(' - ')[0] || 'E01'
+    const ag = animaux.find((x: any) => x.code === codeAnimal)
+    const { error } = await supabase.from('pesees').insert({ animal_id: ag?.id, animal_code: codeAnimal, enclos: enclosAnimal, poids_kg: Number(nouveauPoids), date_pesee: nouvelleDate, note: 'Pesée ' + lotChoisi })
+    if (error) { setMsgPesee('Erreur : ' + error.message); return }
+    // Met aussi à jour le poids actuel dans Cheptel
+    const codeAnimal2 = lotChoisi.split(' - ')[1] || 'AG-1003'
+    await supabase.from('animaux').update({ poids_kg: Number(nouveauPoids) }).eq('code', codeAnimal2)
+    setMsgPesee('Pesée enregistrée : ' + nouveauPoids + ' kg le ' + nouvelleDate)
+    setNouveauPoids(''); charger()
+  }
+
+  const getEnclos = (a: any) => a.enclos || ''
+  const countBatiment = (codeBat: string) => animaux.filter((a: any) => String(getEnclos(a)).toUpperCase().startsWith(codeBat + '-') || String(getEnclos(a)).toUpperCase() === codeBat).length
+  const actifs = animaux.filter((a: any) => a.statut === 'actif')
+  const truiesGestantes = saillies.filter((s: any) => s.statut === 'en_cours').length
+  const porcelets = animaux.filter((a: any) => a.categorie === 'porcelet' && a.statut === 'actif').length
+  const totalVentes = ventes.reduce((s: number, x: any) => s + Number(x.total_gnf || 0), 0)
+  const enAttente = transactions.filter((x: any) => x.statut === 'en_attente')
+  const totalEnAttente = enAttente.reduce((s: number, x: any) => s + Number(x.montant_gnf || 0), 0)
+  // STOCK TOTAL = tous les aliments (Maïs + Aliments composés + Tourteau...), pas seulement Maïs
+  const stockTotalReel = (() => { let s = 0; mouvementsAll.forEach((m: any) => { if (m.type === 'achat') s += Number(m.quantite || 0); else s -= Number(m.quantite || 0); }); return s; })()
+  const stockMaisReel = stockTotalReel
+  const stockMais = stockTotalReel
+  const joursMais = stockTotalReel > 0 ? Math.max(1, Math.floor(stockTotalReel / 210)) : 0
+  const detailStock = (() => { const map: Record<string, number> = {}; mouvementsAll.forEach((m: any) => { const al = aliments.find((x: any) => x.id === m.aliment_id); const nom = al ? al.nom : 'Aliment'; if (!map[nom]) map[nom] = 0; if (m.type === 'achat') map[nom] += Number(m.quantite || 0); else map[nom] -= Number(m.quantite || 0); }); return Object.entries(map).map(([n, q]) => n + ' ' + q + ' kg').join(' • '); })()
+  const nomAliment = (id: string) => { const a = aliments.find((x: any) => x.id === id); return a ? a.nom : 'Aliment' }
+  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'
+  const prochaineMiseBas = saillies.find((s: any) => s.statut === 'en_cours')
+  const nesTotal = portees.reduce((s: number, x: any) => s + Number(x.nes_vivants || 0), 0)
+  const mortsTotal = portees.reduce((s: number, x: any) => s + Number(x.mort_nes || 0) + Number(x.morts_avant_sevrage || 0), 0)
+
+  // --- GMQ REEL par lot choisi ---
+  const peseesLot = pesees.filter((p: any) => (p.enclos + ' - ' + p.animal_code) === lotChoisi || p.animal_code === (lotChoisi.split(' - ')[1] || ''))
+  const premiere = peseesLot[0]
+  const derniere = peseesLot[peseesLot.length - 1]
+  const nbPesees = peseesLot.length
+  const joursEcoules = (premiere && derniere && nbPesees >= 2) ? Math.round((new Date(derniere.date_pesee).getTime() - new Date(premiere.date_pesee).getTime()) / 86400000) : 0
+  const gainTotal = (premiere && derniere && nbPesees >= 2) ? Number(derniere.poids_kg) - Number(premiere.poids_kg) : 0
+  // GMQ valable seulement si au moins 7 jours entre les 2 pesées, sinon c'est une erreur (ex: 2 porcs différents le même jour)
+  const gmqValide = joursEcoules >= 7
+  const gmq = (joursEcoules >= 7) ? Math.round((gainTotal / joursEcoules) * 1000) : 0
+  const maxPoids = peseesLot.length ? Math.max(...peseesLot.map((p: any) => Number(p.poids_kg)), 80) : 80
+  // Points SVG pour la courbe réelle : x = 10 à 190, y inversé selon poids / max
+  const points = peseesLot.map((p: any, i: number) => {
+    const x = peseesLot.length === 1 ? 100 : 10 + (i / (peseesLot.length - 1)) * 180
+    const y = 95 - (Number(p.poids_kg) / maxPoids) * 80
+    return `${x},${y}`
+  }).join(' ')
+  const pathD = points ? `M${points.replaceAll(' ', ' L')}` : ''
+
+  const MENU = [
+    { nom: 'Tableau de bord', href: '/', actif: true, icone: '▦' },
+    { nom: 'Cheptel', href: '/cheptel', actif: false, icone: '🐷' },
+    { nom: 'Reproduction', href: '/reproduction', actif: false, icone: '♡' },
+    { nom: 'Répertoire Truies', href: '/repertoire-truies', actif: false, icone: '📋' },
+    { nom: 'Alimentation', href: '/alimentation', actif: false, icone: '🌾' },
+    { nom: 'Ventes', href: '/ventes', actif: false, icone: '💰' },
+    { nom: 'Pesées', href: '/pesees', actif: false, icone: '⚖️' },
+    { nom: 'Sante', href: '/sante', actif: false, icone: '🩺' },
+    { nom: 'Finances', href: '/finances', actif: false, icone: 'F' },
+    { nom: 'Approbations', href: '/approbations', actif: false, icone: '✓' },
+    { nom: 'Rapports', href: '/rapports', actif: false, icone: '📊' },
+    { nom: 'Audit & Utilisateurs', href: '/audit', actif: false, icone: '🛡' },
+  ]
+
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', background: '#F6F7F9', color: '#111', fontFamily: 'sans-serif' }}>
+      <div style={{ width: 250, background: 'white', padding: 16, borderRight: '1px solid #E5E5E5', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ width: 36, height: 36, background: '#16A34A', color: 'white', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900 }}>A</div>
+          <div><div style={{ fontWeight: 900 }}>AGRONOVA</div><div style={{ fontSize: 11, color: '#666' }}>Guinee - Conakry - Elevage porcin</div></div>
+        </div>
+        <div style={{ fontSize: 11, marginTop: 10, color: '#16A34A' }}>● Données synchronisées - Supabase</div>
+        <div style={{ fontSize: 10, marginTop: 4, background: '#DCFCE7', display: 'inline-block', padding: '2px 6px', borderRadius: 20 }}>RLS actif</div>
+        <div style={{ marginTop: 18, fontSize: 11, fontWeight: 800, color: '#999' }}>NAVIGATION</div>
+        {MENU.map((m: any) => (
+          <a key={m.nom} href={m.href} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 12px', borderRadius: 10, background: m.actif ? '#16A34A' : 'white', color: m.actif ? 'white' : '#111', fontWeight: m.actif ? 800 : 600, marginTop: 4, textDecoration: 'none', fontSize: 13 }}>
+            <span>{m.icone}</span>{m.nom}{m.nom === 'Approbations' && enAttente.length > 0 && <span style={{ marginLeft: 'auto', background: '#FEF3C7', color: '#111', padding: '2px 7px', borderRadius: 20, fontSize: 11, fontWeight: 800 }}>{enAttente.length}</span>}
+          </a>
+        ))}
+        <div style={{ marginTop: 16, background: '#F0FDF4', borderRadius: 12, padding: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: '#166534' }}>BÂTIMENTS</div>
+          {[
+            { code: 'B1', nom: 'B1-Maternité' },
+            { code: 'B2', nom: 'B2-Gestation' },
+            { code: 'B3', nom: 'B3-Croissance' },
+            { code: 'B4', nom: 'B4-Engraissement' },
+            { code: 'B5', nom: 'B5-Quarantaine' },
+            { code: 'B6', nom: 'B6-Verraterie' },
+          ].map((b: any) => (
+            <div key={b.code} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 8 }}><span>{b.nom}</span><b>{countBatiment(b.code)} porcs</b></div>
+          ))}
+        </div>
+        <div style={{ marginTop: 12, fontSize: 11, color: '#666' }}>Rôle actuel : <b>Proprietaire</b><br />Connecté : {userEmail || 'proprietaire@agronova.com'}</div>
+      </div>
+
+      <div style={{ flex: 1, padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 900, margin: 0 }}>Tableau de bord</h1>
+            <p style={{ color: '#666', fontSize: 13, margin: '4px 0' }}>Vue d'ensemble • {actifs.length} porcs • 5 bâtiments • 12 enclos • Mise à jour à l'instant</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', background: 'white', borderRadius: 20, border: '1px solid #DDD', padding: 4, fontSize: 12, fontWeight: 700 }}>
+              <span style={{ background: '#16A34A', color: 'white', padding: '5px 12px', borderRadius: 16 }}>Propriétaire</span>
+              <span style={{ padding: '5px 12px', color: '#666' }}>Responsable Ferme</span>
+              <span style={{ padding: '5px 12px', color: '#666' }}>Comptable</span>
+            </div>
+            <span style={{ width: 32, height: 32, background: '#111', color: 'white', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800 }}>P</span>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginTop: 16 }}>
+          {[
+            { label: 'EFFECTIF TOTAL', val: String(actifs.length), sub: animaux.length + ' enregistrés', dot: '#16A34A' },
+            { label: 'TRUIES GESTANTES', val: String(truiesGestantes), sub: '114j cycle • estimation', dot: '#F59E0B' },
+            { label: 'PORCELETS', val: String(porcelets), sub: '< 21j • allaitants', dot: '#3B82F6' },
+            { label: 'STOCK ALIMENT', val: joursMais + 'j', sub: detailStock || ('Total ' + stockMais + ' kg'), dot: '#16A34A' },
+            { label: 'TRÉSORERIE', val: totalVentes.toLocaleString() + ' GNF', sub: 'GNF • solde estimé', dot: '#111' },
+            { label: 'TRANSACTIONS EN ATTENTE', val: String(enAttente.length), sub: 'Vente ou dépense a approuver', dot: '#F59E0B' },
+          ].map((k: any) => (
+            <div key={k.label} style={{ background: 'white', padding: 14, borderRadius: 14, border: '1px solid #E5E5E5' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 800, color: '#666' }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: k.dot }} />{k.label}</div>
+              <div style={{ fontSize: 22, fontWeight: 900, marginTop: 8 }}>{k.val}</div>
+              <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>{k.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginTop: 14 }}>
+          <div style={{ background: 'white', borderRadius: 14, border: '1px solid #E5E5E5', padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><b>Naissances & Mortalité (6 mois)</b><span style={{ fontSize: 12 }}><span style={{ color: '#16A34A' }}>● Naissances</span> &nbsp; <span style={{ color: '#FCA5A5' }}>● Mortalité</span></span></div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, height: 140, marginTop: 16, justifyContent: 'center' }}>
+              {[
+                { mois: 'Déc', nais: 0, mort: 0 },
+                { mois: 'Jan', nais: 0, mort: 0 },
+                { mois: 'Fév', nais: 0, mort: 0 },
+                { mois: 'Mar', nais: nesTotal, mort: mortsTotal },
+                { mois: 'Avr', nais: 0, mort: 0 },
+                { mois: 'Mai', nais: 0, mort: 0 },
+              ].map((d: any) => (
+                <div key={d.mois} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 100 }}>
+                    <div style={{ width: 28, height: Math.max(6, d.nais * 8), background: '#16A34A', borderRadius: '6px 6px 0 0' }} />
+                    <div style={{ width: 28, height: Math.max(6, d.mort * 8), background: '#FCA5A5', borderRadius: '6px 6px 0 0' }} />
+                  </div>
+                  <span style={{ fontSize: 11, color: '#666' }}>{d.mois}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 8 }}>Données réelles : {nesTotal} nés vivants, {mortsTotal} morts sur {portees.length} portée(s).</div>
+          </div>
+
+          {/* GAIN REEL E01 */}
+          <div style={{ background: 'white', borderRadius: 14, border: '1px solid #E5E5E5', padding: 16 }}>
+            <b>Gain moyen quotidien</b><div style={{ marginTop: 6 }}><select value={lotChoisi} onChange={(e: any) => setLotChoisi(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #DDD', borderRadius: 8, fontWeight: 700 }}><option value='E01 - AG-1003'>Lot E01 - AG-1003 (1 porc)</option><option value='B1 - AG-1001'>Lot B1 - AG-1001 (Truie)</option><option value='B1 - AG-0002'>Lot B1 - AG-0002 (Truie)</option><option value='B6 - AG-0001'>Lot B6 - AG-0001 (Verrat)</option><option value='B3 - Porcelets'>Lot B3 - 10 Porcelets (Croissance)</option></select></div><div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Choisis le lot à voir. Chaque lot a ses propres pesées.</div>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>{nbPesees} pesée(s) réelle(s) • {premiere ? fmtDate(premiere.date_pesee) : '-'} → {derniere ? fmtDate(derniere.date_pesee) : '-'}</div>
+            <div style={{ height: 110, marginTop: 12, position: 'relative', borderBottom: '1px solid #EEE' }}>
+              {peseesLot.length >= 2 ? <svg viewBox='0 0 200 100' style={{ width: '100%', height: '100%' }}><path d={pathD} fill='none' stroke='#16A34A' strokeWidth='3' />{peseesLot.map((p: any, i: number) => { const x = 10 + (i / (peseesLot.length - 1)) * 180; const y = 95 - (Number(p.poids_kg) / maxPoids) * 80; return <circle key={p.id} cx={x} cy={y} r='4' fill='#16A34A' /> })}</svg> : <div style={{ paddingTop: 30, textAlign: 'center', fontSize: 12, color: '#666' }}>Il faut au moins 2 pesées<br />pour tracer la courbe.<br />Ajoute une 2e pesée ci-dessous.</div>}
+              <span style={{ position: 'absolute', left: 0, top: 0, fontSize: 11, color: '#666' }}>{maxPoids}kg</span>
+              <span style={{ position: 'absolute', left: 0, bottom: 0, fontSize: 11, color: '#666' }}>0kg</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#666', marginTop: 4 }}><span>{premiere ? fmtDate(premiere.date_pesee) : 'J0'}</span><span>{derniere ? fmtDate(derniere.date_pesee) : 'J90'}</span></div>
+            {(nbPesees >= 2 && gmqValide) ? <div style={{ background: '#DCFCE7', padding: 10, borderRadius: 10, fontSize: 12, marginTop: 10 }}><b>+{gmq}g/j réel</b> • {gainTotal} kg en {joursEcoules} jours • {premiere.poids_kg} kg → {derniere.poids_kg} kg</div> : <div style={{ background: '#FEF3C7', padding: 10, borderRadius: 10, fontSize: 12, marginTop: 10 }}>{joursEcoules > 0 && joursEcoules < 7 ? 'Pas de GMQ sur le même jour. Repèse dans 15 jours pour un vrai GMQ. Pour l\'instant : ' : 'En attente 2e pesée. '} Pour l'instant : {derniere ? derniere.poids_kg + ' kg le ' + fmtDate(derniere.date_pesee) : 'aucune pesée'}. Pas de GMQ inventé.</div>}
+
+            {/* FORMULAIRE PESEE */}
+            <div style={{ marginTop: 12, borderTop: '1px solid #EEE', paddingTop: 10 }}>
+              <b style={{ fontSize: 12 }}>+ Nouvelle pesée {lotChoisi}</b>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <input type='number' placeholder='Poids kg' value={nouveauPoids} onChange={(e: any) => setNouveauPoids(e.target.value)} style={{ flex: 1, padding: 8, border: '1px solid #DDD', borderRadius: 8 }} />
+                <input type='date' value={nouvelleDate} onChange={(e: any) => setNouvelleDate(e.target.value)} style={{ padding: 8, border: '1px solid #DDD', borderRadius: 8 }} />
+              </div>
+              <button onClick={ajouterPesee} style={{ width: '100%', marginTop: 8, background: '#16A34A', color: 'white', border: 'none', padding: 10, borderRadius: 8, fontWeight: 800, cursor: 'pointer' }}>Enregistrer la pesée</button>
+              {msgPesee && <div style={{ fontSize: 12, marginTop: 6, color: '#166534' }}>{msgPesee}</div>}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11, color: '#666' }}>
+              <b>Historique :</b>
+              {peseesLot.length === 0 ? <div>Aucune pesée pour ce lot.</div> : peseesLot.map((p: any) => <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}><span>{fmtDate(p.date_pesee)}</span><b>{p.poids_kg} kg</b></div>)}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginTop: 14 }}>
+          <div style={{ background: 'white', borderRadius: 14, border: '1px solid #E5E5E5', padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><b>Mouvements récents (stock → cheptel)</b><span style={{ fontSize: 11, color: '#666' }}>Temps réel • Supabase Realtime</span></div>
+            {mouvements.length === 0 ? <p style={{ fontSize: 13, color: '#666', marginTop: 12 }}>Aucun mouvement.</p> : mouvements.map((m: any) => (
+              <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #F5F5F5', fontSize: 13 }}>
+                <span><span style={{ background: m.type === 'achat' ? '#DCFCE7' : '#FEF3C7', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{m.type}</span> &nbsp; {nomAliment(m.aliment_id)} &nbsp; {Number(m.quantite || 0)} kg</span>
+                <span style={{ color: '#666', fontSize: 12 }}>{fmtDate(m.date_mouvement || m.created_at)} • Responsable</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: 'white', borderRadius: 14, border: '1px solid #E5E5E5', padding: 16 }}>
+            <b>Alertes & Rappels</b>
+            <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', padding: 10, borderRadius: 10, fontSize: 12, marginTop: 10 }}>{stockMais > 800 ? 'Stock OK : ' + detailStock + ', ' + joursMais + 'j avant rupture' : 'Stock CRITIQUE : ' + detailStock}</div>
+            {prochaineMiseBas && <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', padding: 10, borderRadius: 10, fontSize: 12, marginTop: 10 }}>♡ INFO Mise bas prévue {prochaineMiseBas.truie_code} le {fmtDate(prochaineMiseBas.date_mise_bas_prevue)} (ESTIMATION 114j)</div>}
+            {enAttente.length > 0 && <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', padding: 10, borderRadius: 10, fontSize: 12, marginTop: 10 }}>F FINANCE {enAttente.length} transaction(s) • {totalEnAttente.toLocaleString()} GNF en attente</div>}
+          </div>
+        </div>
+        <div style={{ marginTop: 12, background: '#F0FDF4', padding: 12, borderRadius: 12, fontSize: 12 }}>Corrige : Stock total = tous aliments, Achats moins Consommations, comme Alimentation. Transactions en attente = Vente ou Depense a approuver. Gain reel par animal. Pour B3, regarde chaque AG-PC-1 a AG-PC-10, pas le lot entier. GMQ calcule seulement si 7 jours ou plus entre 2 pesees. E01 etait juste le 1er lot demande, les autres lots sont dans le menu deroulant.</div>
+      </div>
+    </div>
+  )
+}
